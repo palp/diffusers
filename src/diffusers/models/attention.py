@@ -11,7 +11,10 @@ import xformers
 import xformers.ops
 
 
+
+
 _USE_MEMORY_EFFICIENT_ATTENTION = int(os.environ.get("USE_MEMORY_EFFICIENT_ATTENTION", 0)) == 1
+print("USE_MEMORY_EFFICIENT_ATTENTION=",_USE_MEMORY_EFFICIENT_ATTENTION)
 
 
 def exists(val):
@@ -237,29 +240,6 @@ class MemoryEfficientCrossAttention(nn.Module):
         self.to_out = nn.Sequential(nn.Linear(inner_dim, query_dim), nn.Dropout(dropout))
         self.attention_op: Optional[Any] = None
 
-    def _maybe_init(self, x):
-        """
-        Initialize the attention operator, if required We expect the head dimension to be exposed here, meaning that x
-        : B, Head, Length
-        """
-        if self.attention_op is not None:
-            return
-
-        _, K, M = x.shape
-        try:
-            self.attention_op = xformers.ops.AttentionOpDispatch(
-                dtype=x.dtype,
-                device=x.device,
-                k=K,
-                attn_bias_type=type(None),
-                has_dropout=False,
-                kv_len=M,
-                q_len=M,
-            ).op
-
-        except NotImplementedError as err:
-            raise NotImplementedError(f"Please install xformers with the flash attention / cutlass components.\n{err}")
-
     def forward(self, x, context=None, mask=None):
         q = self.to_q(x)
         context = default(context, x)
@@ -276,11 +256,8 @@ class MemoryEfficientCrossAttention(nn.Module):
             (q, k, v),
         )
 
-        # init the attention op, if required, using the proper dimensions
-        self._maybe_init(q)
-
         # actually compute the attention, what we cannot get enough of
-        out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None, op=self.attention_op)
+        out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None)
 
         # TODO: Use this directly in the attention operation, as a bias
         if exists(mask):
