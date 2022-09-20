@@ -10,7 +10,7 @@ from torch import nn
 import xformers
 import xformers.ops
 
-
+from flash_attn.flash_attn_interface import flash_attn_unpadded_func
 
 
 _USE_MEMORY_EFFICIENT_ATTENTION = int(os.environ.get("USE_MEMORY_EFFICIENT_ATTENTION", 0)) == 1
@@ -231,6 +231,7 @@ class MemoryEfficientCrossAttention(nn.Module):
 
         self.scale = dim_head**-0.5
         self.heads = heads
+        print("heads", heads)
         self.dim_head = dim_head
 
         self.to_q = nn.Linear(query_dim, inner_dim, bias=False)
@@ -239,6 +240,22 @@ class MemoryEfficientCrossAttention(nn.Module):
 
         self.to_out = nn.Sequential(nn.Linear(inner_dim, query_dim), nn.Dropout(dropout))
         self.attention_op: Optional[Any] = None
+    
+    def reshape_heads_to_batch_dim(self, tensor):
+        batch_size, seq_len, dim = tensor.shape
+        head_size = self.heads
+        tensor = tensor.reshape(batch_size, seq_len, head_size, dim // head_size)
+        tensor = tensor.permute(0, 2, 1, 3).reshape(batch_size * head_size, seq_len, dim // head_size)
+        tensor = tensor.permute(1,2,0).contiguous()
+        return tensor
+
+    def reshape_batch_dim_to_heads(self, tensor):
+        tensor = tensor.permute(2,0,1)
+        batch_size, seq_len, dim = tensor.shape
+        head_size = self.heads
+        tensor = tensor.reshape(batch_size // head_size, head_size, seq_len, dim)
+        tensor = tensor.permute(0, 2, 1, 3).reshape(batch_size // head_size, seq_len, dim * head_size).contiguous()
+        return tensor
 
     def forward(self, x, context=None, mask=None):
         q = self.to_q(x)
@@ -247,27 +264,38 @@ class MemoryEfficientCrossAttention(nn.Module):
         v = self.to_v(context)
 
         b, _, _ = q.shape
-        q, k, v = map(
-            lambda t: t.unsqueeze(3)
-            .reshape(b, t.shape[1], self.heads, self.dim_head)
-            .permute(0, 2, 1, 3)
-            .reshape(b * self.heads, t.shape[1], self.dim_head)
-            .contiguous(),
-            (q, k, v),
-        )
-
+        # q, k, v = map(
+        #     lambda t: t.unsqueeze(3)
+        #     .reshape(b, t.shape[1], self.heads, self.dim_head)
+        #     .permute(0, 2, 1, 3)
+        #     .reshape(b * self.heads, t.shape[1], self.dim_head)
+        #     .contiguous(),
+        #     (q, k, v),
+        # )
+        q = self.reshape_heads_to_batch_dim(q)
+        k = self.reshape_heads_to_batch_dim(k)
+        v = self.reshape_heads_to_batch_dim(v)
+        
+        print("q", q.shape, "k", k.shape, "v", v.shape)
+        print(q.stride(), k.stride(), v.stride())
         # actually compute the attention, what we cannot get enough of
-        out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None)
-
+        #out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None)
+        batch_size_q = q.shape[0]
+        seqlen_q = q.shape[1]
+        cu_seqlens_q = torch.arange(0, (batch_size_q + 1) * seqlen_q,
+         step=seqlen_q, dtype=torch.int32,  device=q.device)
+        
+        seqlen_k = k.shape[1]
+        cu_seqlens_k = torch.arange(0, (batch_size_q + 1) * seqlen_k,
+         step=seqlen_k, dtype=torch.int32,  device=k.device)
+        out =  flash_attn_unpadded_func(q, k, v, 
+            cu_seqlens_q=cu_seqlens_q, cu_seqlens_k=cu_seqlens_k, 
+            max_seqlen_q=seqlen_q, max_seqlen_k=seqlen_k,
+            dropout_p = 0.0)
         # TODO: Use this directly in the attention operation, as a bias
         if exists(mask):
             raise NotImplementedError
-        out = (
-            out.unsqueeze(0)
-            .reshape(b, self.heads, out.shape[1], self.dim_head)
-            .permute(0, 2, 1, 3)
-            .reshape(b, out.shape[1], self.heads * self.dim_head)
-        )
+        out = self.reshape_batch_dim_to_heads(out)
         return self.to_out(out)
 
 
@@ -309,13 +337,15 @@ class CrossAttention(nn.Module):
         head_size = self.heads
         tensor = tensor.reshape(batch_size, seq_len, head_size, dim // head_size)
         tensor = tensor.permute(0, 2, 1, 3).reshape(batch_size * head_size, seq_len, dim // head_size)
+        tensor = tensor.permute(1,2,0).contiguous()
         return tensor
 
     def reshape_batch_dim_to_heads(self, tensor):
+        tensor = tensor.permute(2,0,1)
         batch_size, seq_len, dim = tensor.shape
         head_size = self.heads
         tensor = tensor.reshape(batch_size // head_size, head_size, seq_len, dim)
-        tensor = tensor.permute(0, 2, 1, 3).reshape(batch_size // head_size, seq_len, dim * head_size)
+        tensor = tensor.permute(0, 2, 1, 3).reshape(batch_size // head_size, seq_len, dim * head_size).contiguous()
         return tensor
 
     def forward(self, hidden_states, context=None, mask=None):
@@ -325,17 +355,36 @@ class CrossAttention(nn.Module):
         context = context if context is not None else hidden_states
         key = self.to_k(context)
         value = self.to_v(context)
-
+        print("query", query.shape, "key", key.shape, "value", value.shape)
         query = self.reshape_heads_to_batch_dim(query)
         key = self.reshape_heads_to_batch_dim(key)
         value = self.reshape_heads_to_batch_dim(value)
+        print(query.shape, key.shape, value.shape)
 
         # TODO(PVP) - mask is currently never used. Remember to re-implement when used
 
         # attention, what we cannot get enough of
 
         if self._slice_size is None or query.shape[0] // self._slice_size == 1:
-            hidden_states = self._attention(query, key, value)
+
+            q = query
+            k = key
+            v = value
+
+            batch_size_q = q.shape[0]
+            seqlen_q = q.shape[1]
+            cu_seqlens_q = torch.arange(0, (batch_size_q + 1) * seqlen_q,
+            step=seqlen_q, dtype=torch.int32,  device=q.device)
+        
+            seqlen_k = k.shape[1]
+            cu_seqlens_k = torch.arange(0, (batch_size_q + 1) * seqlen_k,
+            step=seqlen_k, dtype=torch.int32,  device=k.device)
+
+            out = flash_attn_unpadded_func(q, k, v, 
+            cu_seqlens_q=cu_seqlens_q, cu_seqlens_k=cu_seqlens_k, 
+            max_seqlen_q=seqlen_q, max_seqlen_k=seqlen_k,
+            dropout_p = 0.0)
+            out = self.reshape_batch_dim_to_heads(out)
         else:
             hidden_states = self._sliced_attention(query, key, value, sequence_length, dim)
 
