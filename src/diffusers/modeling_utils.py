@@ -32,7 +32,7 @@ WEIGHTS_NAME = "diffusion_pytorch_model.bin"
 
 logger = logging.get_logger(__name__)
 
-
+@torch.jit.ignore(drop=True)
 def get_parameter_device(parameter: torch.nn.Module):
     try:
         return next(parameter.parameters()).device
@@ -47,7 +47,7 @@ def get_parameter_device(parameter: torch.nn.Module):
         first_tuple = next(gen)
         return first_tuple[1].device
 
-
+@torch.jit.ignore(drop=True)
 def get_parameter_dtype(parameter: torch.nn.Module):
     try:
         return next(parameter.parameters()).dtype
@@ -62,7 +62,7 @@ def get_parameter_dtype(parameter: torch.nn.Module):
         first_tuple = next(gen)
         return first_tuple[1].dtype
 
-
+@torch.jit.ignore(drop=True)
 def load_state_dict(checkpoint_file: Union[str, os.PathLike]):
     """
     Reads a PyTorch checkpoint file, returning properly formatted errors if they arise.
@@ -90,7 +90,7 @@ def load_state_dict(checkpoint_file: Union[str, os.PathLike]):
                 "If you tried to load a PyTorch model from a TF 2.0 checkpoint, please set from_tf=True."
             )
 
-
+@torch.jit.ignore(drop=True)
 def _load_state_dict_into_model(model_to_load, state_dict):
     # Convert old format to new format if needed from a PyTorch state_dict
     # copy state_dict so _load_from_state_dict can modify it
@@ -127,7 +127,8 @@ class ModelMixin(torch.nn.Module):
 
     def __init__(self):
         super().__init__()
-
+        
+    @torch.jit.ignore(drop=True)
     def save_pretrained(
         self,
         save_directory: Union[str, os.PathLike],
@@ -179,6 +180,7 @@ class ModelMixin(torch.nn.Module):
         logger.info(f"Model weights saved in {os.path.join(save_directory, WEIGHTS_NAME)}")
 
     @classmethod
+    @torch.jit.ignore(drop=True)
     def from_pretrained(cls, pretrained_model_name_or_path: Optional[Union[str, os.PathLike]], **kwargs):
         r"""
         Instantiate a pretrained pytorch model from a pre-trained model configuration.
@@ -385,6 +387,7 @@ class ModelMixin(torch.nn.Module):
         return model
 
     @classmethod
+    @torch.jit.ignore(drop=True)
     def _load_pretrained_model(
         cls,
         model,
@@ -489,6 +492,7 @@ class ModelMixin(torch.nn.Module):
         return model, missing_keys, unexpected_keys, mismatched_keys, error_msgs
 
     @property
+    @torch.jit.ignore(drop=True)
     def device(self) -> device:
         """
         `torch.device`: The device on which the module is (assuming that all the module parameters are on the same
@@ -497,12 +501,14 @@ class ModelMixin(torch.nn.Module):
         return get_parameter_device(self)
 
     @property
+    @torch.jit.ignore(drop=True)
     def dtype(self) -> torch.dtype:
         """
         `torch.dtype`: The dtype of the module (assuming that all the module parameters have the same dtype).
         """
         return get_parameter_dtype(self)
 
+    @torch.jit.ignore(drop=True)
     def num_parameters(self, only_trainable: bool = False, exclude_embeddings: bool = False) -> int:
         """
         Get number of (optionally, trainable or non-embeddings) parameters in the module.
@@ -531,7 +537,7 @@ class ModelMixin(torch.nn.Module):
         else:
             return sum(p.numel() for p in self.parameters() if p.requires_grad or not only_trainable)
 
-
+@torch.jit.ignore(drop=True)
 def unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
     """
     Recursively unwraps a model from potential containers (as used in distributed training).

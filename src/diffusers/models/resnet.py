@@ -31,8 +31,6 @@ class Upsample2D(nn.Module):
         # TODO(Suraj, Patrick) - clean up after weight dicts are correctly renamed
         if name == "conv":
             self.conv = conv
-        else:
-            self.Conv2d_0 = conv
 
     def forward(self, x):
         assert x.shape[1] == self.channels
@@ -45,8 +43,6 @@ class Upsample2D(nn.Module):
         if self.use_conv:
             if self.name == "conv":
                 x = self.conv(x)
-            else:
-                x = self.Conv2d_0(x)
 
         return x
 
@@ -84,11 +80,12 @@ class Downsample2D(nn.Module):
         else:
             self.conv = conv
 
+    @torch.jit.ignore(drop=True)
     def forward(self, x):
         assert x.shape[1] == self.channels
         if self.use_conv and self.padding == 0:
             pad = (0, 1, 0, 1)
-            x = F.pad(x, pad, mode="constant", value=0)
+            x = F.pad(x, pad, mode="constant", value=0.)
 
         assert x.shape[1] == self.channels
         x = self.conv(x)

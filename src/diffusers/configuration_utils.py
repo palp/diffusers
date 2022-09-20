@@ -29,7 +29,7 @@ from requests import HTTPError
 
 from . import __version__
 from .utils import DIFFUSERS_CACHE, HUGGINGFACE_CO_RESOLVE_ENDPOINT, logging
-
+import torch
 
 logger = logging.get_logger(__name__)
 
@@ -318,6 +318,7 @@ class ConfigMixin:
         return f"{self.__class__.__name__} {self.to_json_string()}"
 
     @property
+    @torch.jit.ignore(drop=True)
     def config(self) -> Dict[str, Any]:
         return self._internal_dict
 
