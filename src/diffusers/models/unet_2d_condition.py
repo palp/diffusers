@@ -208,6 +208,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
             [`~models.unet_2d_condition.UNet2DConditionOutput`] if `return_dict` is True, otherwise a `tuple`. When
             returning a tuple, the first element is the sample tensor.
         """
+        sample = sample.half()
         # 0. center input if necessary
         if self.config.center_input_sample:
             sample = 2 * sample - 1.0

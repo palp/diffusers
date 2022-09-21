@@ -257,7 +257,7 @@ class MemoryEfficientCrossAttention(nn.Module):
         )
 
         # actually compute the attention, what we cannot get enough of
-        out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None)
+        out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None).to(dtype=q.dtype)
 
         # TODO: Use this directly in the attention operation, as a bias
         if exists(mask):
@@ -268,6 +268,7 @@ class MemoryEfficientCrossAttention(nn.Module):
             .permute(0, 2, 1, 3)
             .reshape(b, out.shape[1], self.heads * self.dim_head)
         )
+
         return self.to_out(out)
 
 
