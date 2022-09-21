@@ -1170,18 +1170,50 @@ class PipelineTesterMixin(unittest.TestCase):
 
     @slow
     @unittest.skipIf(torch_device == "cpu", "Stable diffusion is supposed to run on GPU")
-    def test_stable_diffusion_text2img_pipeline(self):
-        expected_image = load_image(
-            "https://huggingface.co/datasets/hf-internal-testing/diffusers-images/resolve/main"
-            "/text2img/astronaut_riding_a_horse.png"
-        )
-        expected_image = np.array(expected_image, dtype=np.float32) / 255.0
-
+    def test_stable_diffusion_f16_no_autocast(self):
+        torch.cuda.reset_peak_memory_stats()
         model_id = "CompVis/stable-diffusion-v1-4"
         pipe = StableDiffusionPipeline.from_pretrained(
-            model_id,
-            safety_checker=self.dummy_safety_checker,
-            use_auth_token=True,
+            model_id, revision="fp16", torch_dtype=torch.float16, use_auth_token=True
+        ).to(torch_device)
+        pipe.set_progress_bar_config(disable=None)
+
+        prompt = "a photograph of an astronaut riding a horse"
+
+        generator = torch.Generator(device=torch_device).manual_seed(0)
+        output_chunked = pipe(
+            [prompt], generator=generator, guidance_scale=7.5, num_inference_steps=10, output_type="numpy"
+        )
+        image_chunked = output_chunked.images
+
+        generator = torch.Generator(device=torch_device).manual_seed(0)
+        with torch.autocast(torch_device):
+            output = pipe(
+                [prompt], generator=generator, guidance_scale=7.5, num_inference_steps=10, output_type="numpy"
+            )
+            image = output.images
+
+        # Make sure results are close enough
+        diff = np.abs(image_chunked.flatten() - image.flatten())
+        # They ARE different since ops are not run always at the same precision
+        # however, they should be extremely close.
+        assert diff.mean() < 2e-2
+
+    @slow
+    @unittest.skipIf(torch_device == "cpu", "Stable diffusion is supposed to run on GPU")
+    def test_stable_diffusion_img2img_pipeline(self):
+        ds = load_dataset(
+            "imagefolder",
+            data_files={
+                "input": [
+                    "https://huggingface.co/datasets/hf-internal-testing/diffusers-images/resolve/main"
+                    "/img2img/sketch-mountains-input.jpg"
+                ],
+                "output": [
+                    "https://huggingface.co/datasets/hf-internal-testing/diffusers-images/resolve/main"
+                    "/img2img/fantasy_landscape.png"
+                ],
+            },
         )
         pipe.to(torch_device)
         pipe.set_progress_bar_config(disable=None)
