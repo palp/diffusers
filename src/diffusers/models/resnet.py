@@ -34,21 +34,27 @@ class Upsample2D(nn.Module):
         else:
             self.Conv2d_0 = conv
 
-    def forward(self, x):
-        assert x.shape[1] == self.channels
-        if self.use_conv_transpose:
-            return self.conv(x)
+    def forward(self, hidden_states, output_size=None):
+        assert hidden_states.shape[1] == self.channels
 
-        x = F.interpolate(x, scale_factor=2.0, mode="nearest")
+        if self.use_conv_transpose:
+            return self.conv(hidden_states)
+
+        # if `output_size` is passed we force the interpolation output
+        # size and do not make use of `scale_factor=2`
+        if output_size is None:
+            hidden_states = F.interpolate(hidden_states, scale_factor=2.0, mode="nearest")
+        else:
+            hidden_states = F.interpolate(hidden_states, size=output_size, mode="nearest")
 
         # TODO(Suraj, Patrick) - clean up after weight dicts are correctly renamed
         if self.use_conv:
             if self.name == "conv":
-                x = self.conv(x)
+                hidden_states = self.conv(hidden_states)
             else:
-                x = self.Conv2d_0(x)
+                hidden_states = self.Conv2d_0(hidden_states)
 
-        return x
+        return hidden_states
 
 
 class Downsample2D(nn.Module):
@@ -84,16 +90,16 @@ class Downsample2D(nn.Module):
         else:
             self.conv = conv
 
-    def forward(self, x):
-        assert x.shape[1] == self.channels
+    def forward(self, hidden_states):
+        assert hidden_states.shape[1] == self.channels
         if self.use_conv and self.padding == 0:
             pad = (0, 1, 0, 1)
-            x = F.pad(x, pad, mode="constant", value=0)
+            hidden_states = F.pad(hidden_states, pad, mode="constant", value=0)
 
-        assert x.shape[1] == self.channels
-        x = self.conv(x)
+        assert hidden_states.shape[1] == self.channels
+        hidden_states = self.conv(hidden_states)
 
-        return x
+        return hidden_states
 
 
 class FirUpsample2D(nn.Module):
@@ -149,7 +155,6 @@ class FirUpsample2D(nn.Module):
 
             stride = (factor, factor)
             # Determine data dimensions.
-            stride = [1, 1, factor, factor]
             output_shape = ((x.shape[2] - 1) * factor + convH, (x.shape[3] - 1) * factor + convW)
             output_padding = (
                 output_shape[0] - (x.shape[2] - 1) * stride[0] - convH,
@@ -161,7 +166,7 @@ class FirUpsample2D(nn.Module):
 
             # Transpose weights.
             weight = torch.reshape(weight, (num_groups, -1, inC, convH, convW))
-            weight = weight[..., ::-1, ::-1].permute(0, 2, 1, 3, 4)
+            weight = torch.flip(weight, dims=[3, 4]).permute(0, 2, 1, 3, 4)
             weight = torch.reshape(weight, (num_groups * inC, -1, convH, convW))
 
             x = F.conv_transpose2d(x, weight, stride=stride, output_padding=output_padding, padding=0)
@@ -175,12 +180,12 @@ class FirUpsample2D(nn.Module):
 
         return x
 
-    def forward(self, x):
+    def forward(self, hidden_states):
         if self.use_conv:
-            height = self._upsample_2d(x, self.Conv2d_0.weight, kernel=self.fir_kernel)
+            height = self._upsample_2d(hidden_states, self.Conv2d_0.weight, kernel=self.fir_kernel)
             height = height + self.Conv2d_0.bias.reshape(1, -1, 1, 1)
         else:
-            height = self._upsample_2d(x, kernel=self.fir_kernel, factor=2)
+            height = self._upsample_2d(hidden_states, kernel=self.fir_kernel, factor=2)
 
         return height
 
@@ -237,14 +242,14 @@ class FirDownsample2D(nn.Module):
 
         return x
 
-    def forward(self, x):
+    def forward(self, hidden_states):
         if self.use_conv:
-            x = self._downsample_2d(x, weight=self.Conv2d_0.weight, kernel=self.fir_kernel)
-            x = x + self.Conv2d_0.bias.reshape(1, -1, 1, 1)
+            hidden_states = self._downsample_2d(hidden_states, weight=self.Conv2d_0.weight, kernel=self.fir_kernel)
+            hidden_states = hidden_states + self.Conv2d_0.bias.reshape(1, -1, 1, 1)
         else:
-            x = self._downsample_2d(x, kernel=self.fir_kernel, factor=2)
+            hidden_states = self._downsample_2d(hidden_states, kernel=self.fir_kernel, factor=2)
 
-        return x
+        return hidden_states
 
 
 class ResnetBlock2D(nn.Module):
@@ -330,7 +335,9 @@ class ResnetBlock2D(nn.Module):
     def forward(self, x, temb):
         hidden_states = x
 
-        hidden_states = self.norm1(hidden_states).type(hidden_states.dtype)
+        # make sure hidden states is in float32
+        # when running in half-precision
+        hidden_states = self.norm1(hidden_states)
         hidden_states = self.nonlinearity(hidden_states)
 
         if self.upsample is not None:
@@ -346,7 +353,9 @@ class ResnetBlock2D(nn.Module):
             temb = self.time_emb_proj(self.nonlinearity(temb))[:, :, None, None]
             hidden_states = hidden_states + temb
 
-        hidden_states = self.norm2(hidden_states).type(hidden_states.dtype)
+        # make sure hidden states is in float32
+        # when running in half-precision
+        hidden_states = self.norm2(hidden_states)
         hidden_states = self.nonlinearity(hidden_states)
 
         hidden_states = self.dropout(hidden_states)
