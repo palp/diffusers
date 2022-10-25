@@ -263,16 +263,13 @@ class MemoryEfficientCrossAttention(nn.Module):
         else:
             weights = None
             context_in = context
-        print(context_in.shape)
         context_dim = context_in.shape[0]
-        print("context_dim", context_dim)
         k = self.to_k(context_in)
         v = self.to_v(context_in)
         if weights is not None:
             q = repeat(q, "b x y -> (b c) x y", c=context_dim)
             k = repeat(k, "c x y -> (b c) x y", b=x_dim)
             v = repeat(v, "c x y -> (b c) x y", b=x_dim)
-            print(q.shape, k.shape, v.shape)
 
         attn_in_dim, _, _ = q.shape
 
@@ -284,7 +281,6 @@ class MemoryEfficientCrossAttention(nn.Module):
             .contiguous(),
             (q, k, v),
         )
-        # print(q.shape, k.shape, v.shape)
         # actually compute the attention, what we cannot get enough of
         if _USE_MEMORY_EFFICIENT_ATTENTION:
             if self.dim_head%8 != 0:
@@ -312,15 +308,12 @@ class MemoryEfficientCrossAttention(nn.Module):
             )
         else:
             out = self._attention(q, k, v)
-        print(out.shape)
         if weights is not None:
             out = rearrange(out, "(b c) x y -> b c x y", b=x_dim, c=context_dim)
-            print(out.shape)
             weights = torch.tensor(weights, device=out.device)
             weights = rearrange(weights, "c -> () c () ()")
             out = out * weights
             out = out.sum(dim=1)
-            print(out.shape)
         # TODO: Use this directly in the attention operation, as a bias
         if exists(mask):
             raise NotImplementedError
