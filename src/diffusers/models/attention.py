@@ -23,7 +23,7 @@ from torch import nn
 import xformers
 import xformers.ops
 
-
+from einops import rearrange, repeat
 
 
 _USE_MEMORY_EFFICIENT_ATTENTION = int(os.environ.get("USE_MEMORY_EFFICIENT_ATTENTION", 0)) == 1
@@ -255,6 +255,7 @@ class MemoryEfficientCrossAttention(nn.Module):
 
     def forward(self, x, context=None, mask=None):
         q = self.to_q(x)
+        x_dim = x.shape[0]
         context = default(context, x)
         if isinstance(context, dict):
             context_in = context["hidden_states"]
@@ -262,17 +263,24 @@ class MemoryEfficientCrossAttention(nn.Module):
         else:
             weights = None
             context_in = context
+        print(context_in.shape)
+        context_dim = context_in.shape[0]
+        print("context_dim", context_dim)
         k = self.to_k(context_in)
         v = self.to_v(context_in)
-        chunk = 1 if weights is None else len(weights)
-        q = torch.cat([q]*chunk, dim=0)
-        b, _, _ = q.shape
+        if weights is not None:
+            q = repeat(q, "b x y -> (b c) x y", c=context_dim)
+            k = repeat(k, "c x y -> (b c) x y", b=x_dim)
+            v = repeat(v, "c x y -> (b c) x y", b=x_dim)
+            print(q.shape, k.shape, v.shape)
+
+        attn_in_dim, _, _ = q.shape
 
         q, k, v = map(
             lambda t: t.unsqueeze(3)
-            .reshape(b, t.shape[1], self.heads, self.dim_head)
+            .reshape(attn_in_dim, t.shape[1], self.heads, self.dim_head)
             .permute(0, 2, 1, 3)
-            .reshape(b * self.heads, t.shape[1], self.dim_head)
+            .reshape(attn_in_dim * self.heads, t.shape[1], self.dim_head)
             .contiguous(),
             (q, k, v),
         )
@@ -298,20 +306,21 @@ class MemoryEfficientCrossAttention(nn.Module):
 
             out = (
                 out.unsqueeze(0)
-                .reshape(b, self.heads, out.shape[1], self.dim_head)
+                .reshape(attn_in_dim, self.heads, out.shape[1], self.dim_head)
                 .permute(0, 2, 1, 3)
-                .reshape(b, out.shape[1], self.heads * self.dim_head)
+                .reshape(attn_in_dim, out.shape[1], self.heads * self.dim_head)
             )
         else:
             out = self._attention(q, k, v)
-
+        print(out.shape)
         if weights is not None:
-            out_list = []
-            out = out.chunk(chunk, dim=0)
-            for i in range(len(weights)):
-                out_list.append(out[i]*weights[i])
-            out = torch.cat(out_list, dim=0).sum(dim=0)
-
+            out = rearrange(out, "(b c) x y -> b c x y", b=x_dim, c=context_dim)
+            print(out.shape)
+            weights = torch.tensor(weights, device=out.device)
+            weights = rearrange(weights, "c -> () c () ()")
+            out = out * weights
+            out = out.sum(dim=1)
+            print(out.shape)
         # TODO: Use this directly in the attention operation, as a bias
         if exists(mask):
             raise NotImplementedError
