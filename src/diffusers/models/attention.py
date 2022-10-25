@@ -256,10 +256,18 @@ class MemoryEfficientCrossAttention(nn.Module):
     def forward(self, x, context=None, mask=None):
         q = self.to_q(x)
         context = default(context, x)
-        k = self.to_k(context)
-        v = self.to_v(context)
-
+        if isinstance(context, dict):
+            context_in = context["hidden_states"]
+            weights = context["weights"]
+        else:
+            weights = None
+            context_in = context
+        k = self.to_k(context_in)
+        v = self.to_v(context_in)
+        chunk = 1 if weights is None else len(weights)
+        q = torch.cat([q]*chunk, dim=0)
         b, _, _ = q.shape
+
         q, k, v = map(
             lambda t: t.unsqueeze(3)
             .reshape(b, t.shape[1], self.heads, self.dim_head)
@@ -268,22 +276,65 @@ class MemoryEfficientCrossAttention(nn.Module):
             .contiguous(),
             (q, k, v),
         )
-
+        # print(q.shape, k.shape, v.shape)
         # actually compute the attention, what we cannot get enough of
-        out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None).to(dtype=q.dtype)
+        if _USE_MEMORY_EFFICIENT_ATTENTION:
+            if self.dim_head%8 != 0:
+                # if the dim_head is not a multiple of 64, we need to pad it to a multiple of 64
+                # this is because the memory efficient attention only works with dim_head being a multiple of 64
+                # we pad the dim_head to a multiple of 64 and then slice it back to the original dim_head
+                # this is not the most efficient way to do it, but it works
+                q = torch.cat([q, torch.zeros(q.shape[0], q.shape[1], 8 - q.shape[2]%8, device=q.device)], dim=2)
+                k = torch.cat([k, torch.zeros(k.shape[0], k.shape[1], 8 - k.shape[2]%8, device=k.device)], dim=2)
+                v = torch.cat([v, torch.zeros(v.shape[0], v.shape[1], 8 - v.shape[2]%8, device=v.device)], dim=2)
+                unpad = self.dim_head
+            else:
+                unpad = False
+
+            out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None).to(dtype=q.dtype)
+
+            if unpad:
+                out = out[:, :, :unpad]
+
+            out = (
+                out.unsqueeze(0)
+                .reshape(b, self.heads, out.shape[1], self.dim_head)
+                .permute(0, 2, 1, 3)
+                .reshape(b, out.shape[1], self.heads * self.dim_head)
+            )
+        else:
+            out = self._attention(q, k, v)
+
+        if weights is not None:
+            out_list = []
+            out = out.chunk(chunk, dim=0)
+            for i in range(len(weights)):
+                out_list.append(out[i]*weights[i])
+            out = torch.cat(out_list, dim=0).sum(dim=0)
 
         # TODO: Use this directly in the attention operation, as a bias
         if exists(mask):
             raise NotImplementedError
-        out = (
-            out.unsqueeze(0)
-            .reshape(b, self.heads, out.shape[1], self.dim_head)
-            .permute(0, 2, 1, 3)
-            .reshape(b, out.shape[1], self.heads * self.dim_head)
-        )
+
 
         return self.to_out(out)
 
+    def _attention(self, query, key, value):
+        # TODO: use baddbmm for better performance
+        attention_scores = torch.matmul(query, key.transpose(-1, -2)) * self.scale
+        attention_probs = attention_scores.softmax(dim=-1)
+        # compute attention output
+        hidden_states = torch.matmul(attention_probs, value)
+        # reshape hidden_states
+        hidden_states = self.reshape_batch_dim_to_heads(hidden_states)
+        return hidden_states
+
+    def reshape_batch_dim_to_heads(self, tensor):
+        batch_size, seq_len, dim = tensor.shape
+        head_size = self.heads
+        tensor = tensor.reshape(batch_size // head_size, head_size, seq_len, dim)
+        tensor = tensor.permute(0, 2, 1, 3).reshape(batch_size // head_size, seq_len, dim * head_size)
+        return tensor
 
 class CrossAttention(nn.Module):
     r"""
