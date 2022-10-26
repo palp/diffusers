@@ -260,16 +260,16 @@ class MemoryEfficientCrossAttention(nn.Module):
         if isinstance(context, dict):
             context_in = context["hidden_states"]
             weights = context["weights"]
+            context_num = context["context_num"]
+            #q = q.repeat_interleave(context_num, dim=0) #TODO: CUDA ops not supported, maybe change back when fixed
+            # find another way
+            q = torch.cat([q[i].repeat(context_num[i],1,1) for i in range(len(context_num))], dim=0)
         else:
             weights = None
             context_in = context
         context_dim = context_in.shape[0]
         k = self.to_k(context_in)
         v = self.to_v(context_in)
-        if weights is not None:
-            q = repeat(q, "b l hd -> (b c) l hd", c=context_dim)
-            k = repeat(k, "c l hd -> (b c) l hd", b=x_dim)
-            v = repeat(v, "c l hd -> (b c) l hd", b=x_dim)
         q,k,v = map(lambda t: rearrange(t, 'bc l (h d) -> (bc h) l d', h=self.heads).contiguous(), (q,k,v))
 
         # actually compute the attention, what we cannot get enough of
@@ -298,13 +298,10 @@ class MemoryEfficientCrossAttention(nn.Module):
         else:
             out = self._attention(q, k, v)
         if weights is not None:
-            out = rearrange(out, "(b c) l hd -> b c l hd", b=x_dim, c=context_dim)
-            weights = torch.tensor(weights, device=out.device)
-            # weights = rearrange(weights, "c -> () c () ()")
-            # out = out * weights
-            # out = out.sum(dim=1)
-            # use einsum to do the weighted sum
-            out = torch.einsum("b c l h, c -> b l h", out, weights)
+            #out = rearrange(out, "(b c) l hd -> b c l hd", b=x_dim, c=context_dim)
+            weights = torch.split(weights, context_num)
+            out = torch.split(out, context_num)
+            out = torch.stack([torch.einsum("c l h, c -> l h", o, w) for w, o in zip(weights, out)])
         # TODO: Use this directly in the attention operation, as a bias
         if exists(mask):
             raise NotImplementedError
