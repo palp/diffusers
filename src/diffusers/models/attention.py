@@ -267,30 +267,24 @@ class MemoryEfficientCrossAttention(nn.Module):
         k = self.to_k(context_in)
         v = self.to_v(context_in)
         if weights is not None:
-            q = repeat(q, "b x y -> (b c) x y", c=context_dim)
-            k = repeat(k, "c x y -> (b c) x y", b=x_dim)
-            v = repeat(v, "c x y -> (b c) x y", b=x_dim)
+            q = repeat(q, "b l hd -> (b c) l hd", c=context_dim)
+            k = repeat(k, "c l hd -> (b c) l hd", b=x_dim)
+            v = repeat(v, "c l hd -> (b c) l hd", b=x_dim)
+        q,k,v = map(lambda t: rearrange(t, 'bc l (h d) -> (bc h) l d', h=self.heads).contiguous(), (q,k,v))
 
-        attn_in_dim, _, _ = q.shape
-
-        q, k, v = map(
-            lambda t: t.unsqueeze(3)
-            .reshape(attn_in_dim, t.shape[1], self.heads, self.dim_head)
-            .permute(0, 2, 1, 3)
-            .reshape(attn_in_dim * self.heads, t.shape[1], self.dim_head)
-            .contiguous(),
-            (q, k, v),
-        )
         # actually compute the attention, what we cannot get enough of
         if _USE_MEMORY_EFFICIENT_ATTENTION:
             if self.dim_head%8 != 0:
-                # if the dim_head is not a multiple of 64, we need to pad it to a multiple of 64
-                # this is because the memory efficient attention only works with dim_head being a multiple of 64
-                # we pad the dim_head to a multiple of 64 and then slice it back to the original dim_head
-                # this is not the most efficient way to do it, but it works
-                q = torch.cat([q, torch.zeros(q.shape[0], q.shape[1], 8 - q.shape[2]%8, device=q.device)], dim=2)
-                k = torch.cat([k, torch.zeros(k.shape[0], k.shape[1], 8 - k.shape[2]%8, device=k.device)], dim=2)
-                v = torch.cat([v, torch.zeros(v.shape[0], v.shape[1], 8 - v.shape[2]%8, device=v.device)], dim=2)
+                # if the dim_head is not a multiple of 8, we need to pad it to a multiple of 8
+                # this is because the memory efficient attention only works with dim_head being a multiple of 8
+                # we pad the dim_head to a multiple of 8 and then slice it back to the original dim_head
+                # this maybe not the most efficient way to do it, but it works
+
+                # pad more gracefully
+                q = F.pad(q, (0, 8 - q.shape[2]%8))
+                k = F.pad(k, (0, 8 - k.shape[2]%8))
+                v = F.pad(v, (0, 8 - v.shape[2]%8)) 
+
                 unpad = self.dim_head
             else:
                 unpad = False
@@ -300,20 +294,17 @@ class MemoryEfficientCrossAttention(nn.Module):
             if unpad:
                 out = out[:, :, :unpad]
 
-            out = (
-                out.unsqueeze(0)
-                .reshape(attn_in_dim, self.heads, out.shape[1], self.dim_head)
-                .permute(0, 2, 1, 3)
-                .reshape(attn_in_dim, out.shape[1], self.heads * self.dim_head)
-            )
+            out = rearrange(out, '(bc h) l d -> bc l (h d)', h=self.heads)
         else:
             out = self._attention(q, k, v)
         if weights is not None:
-            out = rearrange(out, "(b c) x y -> b c x y", b=x_dim, c=context_dim)
+            out = rearrange(out, "(b c) l hd -> b c l hd", b=x_dim, c=context_dim)
             weights = torch.tensor(weights, device=out.device)
-            weights = rearrange(weights, "c -> () c () ()")
-            out = out * weights
-            out = out.sum(dim=1)
+            # weights = rearrange(weights, "c -> () c () ()")
+            # out = out * weights
+            # out = out.sum(dim=1)
+            # use einsum to do the weighted sum
+            out = torch.einsum("b c l h, c -> b l h", out, weights)
         # TODO: Use this directly in the attention operation, as a bias
         if exists(mask):
             raise NotImplementedError
