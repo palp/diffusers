@@ -28,7 +28,8 @@ from einops import rearrange, repeat
 
 _USE_MEMORY_EFFICIENT_ATTENTION = int(os.environ.get("USE_MEMORY_EFFICIENT_ATTENTION", 0)) == 1
 print("USE_MEMORY_EFFICIENT_ATTENTION=",_USE_MEMORY_EFFICIENT_ATTENTION)
-
+_USE_ATTENTION_DOWNSAMPLING = int(os.environ.get("USE_ATTENTION_DOWNSAMPLING", 0)) == 1
+print("USE_ATTENTION_DOWNSAMPLING=",_USE_ATTENTION_DOWNSAMPLING)
 
 def exists(val):
     return val is not None
@@ -253,6 +254,8 @@ class MemoryEfficientCrossAttention(nn.Module):
         self.to_out = nn.Sequential(nn.Linear(inner_dim, query_dim), nn.Dropout(dropout))
         self.attention_op: Optional[Any] = None
 
+
+
     def forward(self, x, context=None, mask=None):
         q = self.to_q(x)
         x_dim = x.shape[0]
@@ -271,7 +274,6 @@ class MemoryEfficientCrossAttention(nn.Module):
         k = self.to_k(context_in)
         v = self.to_v(context_in)
         q,k,v = map(lambda t: rearrange(t, 'bc l (h d) -> (bc h) l d', h=self.heads).contiguous(), (q,k,v))
-
         # actually compute the attention, what we cannot get enough of
         if _USE_MEMORY_EFFICIENT_ATTENTION:
             if self.dim_head%8 != 0:
@@ -284,12 +286,26 @@ class MemoryEfficientCrossAttention(nn.Module):
                 q = F.pad(q, (0, 8 - q.shape[2]%8))
                 k = F.pad(k, (0, 8 - k.shape[2]%8))
                 v = F.pad(v, (0, 8 - v.shape[2]%8)) 
-
+                
                 unpad = self.dim_head
             else:
                 unpad = False
-
             out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None).to(dtype=q.dtype)
+            if _USE_ATTENTION_DOWNSAMPLING:
+                x = rearrange(x, "b hw d -> b d hw")
+                x = F.interpolate(x, scale_factor=(0.5), mode="nearest")
+                x = rearrange(x, "b d hw -> b hw d")
+                q = self.to_q(x)
+                if isinstance(context, dict):
+                    q = torch.cat([q[i].repeat(context_num[i],1,1) for i in range(len(context_num))], dim=0)
+                q = rearrange(q, 'bc l (h d) -> (bc h) l d', h=self.heads).contiguous()
+                if self.dim_head%8 != 0:
+                    q = F.pad(q, (0, 8 - q.shape[2]%8))
+                out_2 = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None).to(dtype=q.dtype)
+                out_2 = rearrange(out_2, "b hw d -> b d hw ")
+                out_2 = F.interpolate(out_2, scale_factor=(2), mode="nearest")
+                out_2 = rearrange(out_2, "b d hw -> b hw d")
+                out = out*.5 + out_2*.5
 
             if unpad:
                 out = out[:, :, :unpad]
