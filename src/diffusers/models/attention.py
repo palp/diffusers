@@ -24,12 +24,15 @@ import xformers
 import xformers.ops
 
 from einops import rearrange, repeat
+import builtins
 
 
 _USE_MEMORY_EFFICIENT_ATTENTION = int(os.environ.get("USE_MEMORY_EFFICIENT_ATTENTION", 0)) == 1
 print("USE_MEMORY_EFFICIENT_ATTENTION=",_USE_MEMORY_EFFICIENT_ATTENTION)
 _USE_ATTENTION_DOWNSAMPLING = int(os.environ.get("USE_ATTENTION_DOWNSAMPLING", 0)) == 1
 print("USE_ATTENTION_DOWNSAMPLING=",_USE_ATTENTION_DOWNSAMPLING)
+_USE_NEW_V1 = int(os.environ.get("USE_NEW_V1", 0)) == 1
+print("USE_NEW_V1=",_USE_NEW_V1)
 
 def exists(val):
     return val is not None
@@ -78,8 +81,11 @@ class AttentionBlock(nn.Module):
         self.value = nn.Linear(channels, channels)
 
         self.rescale_output_factor = rescale_output_factor
-        self.proj_attn = nn.Linear(channels, channels, 1)
-
+        if _USE_NEW_V1:
+            self.proj_attn = nn.Linear(channels, channels)
+        else:
+            self.proj_attn = nn.Linear(channels, channels, 1)
+            
     def transpose_for_scores(self, projection: torch.Tensor) -> torch.Tensor:
         new_projection_shape = projection.size()[:-1] + (self.num_heads, -1)
         # move heads to 2nd position (B, T, H * D) -> (B, T, H, D) -> (B, H, T, D)
@@ -157,7 +163,10 @@ class SpatialTransformer(nn.Module):
         inner_dim = n_heads * d_head
         self.norm = torch.nn.GroupNorm(num_groups=num_groups, num_channels=in_channels, eps=1e-6, affine=True)
 
-        self.proj_in = nn.Conv2d(in_channels, inner_dim, kernel_size=1, stride=1, padding=0)
+        if _USE_NEW_V1:
+            self.proj_in = nn.Linear(in_channels, inner_dim)
+        else:
+            self.proj_in = nn.Conv2d(in_channels, inner_dim, kernel_size=1, stride=1, padding=0)
 
         self.transformer_blocks = nn.ModuleList(
             [
@@ -166,7 +175,10 @@ class SpatialTransformer(nn.Module):
             ]
         )
 
-        self.proj_out = nn.Conv2d(inner_dim, in_channels, kernel_size=1, stride=1, padding=0)
+        if _USE_NEW_V1:
+            self.proj_out = nn.Linear(in_channels, inner_dim)
+        else:
+            self.proj_out = nn.Conv2d(inner_dim, in_channels, kernel_size=1, stride=1, padding=0)
 
     def _set_attention_slice(self, slice_size):
         for block in self.transformer_blocks:
@@ -177,13 +189,19 @@ class SpatialTransformer(nn.Module):
         batch, channel, height, weight = hidden_states.shape
         residual = hidden_states
         hidden_states = self.norm(hidden_states)
-        hidden_states = self.proj_in(hidden_states)
+        if not _USE_NEW_V1:
+            hidden_states = self.proj_in(hidden_states)
         inner_dim = hidden_states.shape[1]
         hidden_states = hidden_states.permute(0, 2, 3, 1).reshape(batch, height * weight, inner_dim)
+        if _USE_NEW_V1:
+            hidden_states = self.proj_in(hidden_states)
         for block in self.transformer_blocks:
             hidden_states = block(hidden_states, context=context)
+        if _USE_NEW_V1:
+            hidden_states = self.proj_out(hidden_states)
         hidden_states = hidden_states.reshape(batch, height, weight, inner_dim).permute(0, 3, 1, 2)
-        hidden_states = self.proj_out(hidden_states)
+        if not _USE_NEW_V1:
+            hidden_states = self.proj_out(hidden_states)
         return hidden_states + residual
 
 
@@ -254,7 +272,8 @@ class MemoryEfficientCrossAttention(nn.Module):
         self.to_out = nn.Sequential(nn.Linear(inner_dim, query_dim), nn.Dropout(dropout))
         self.attention_op: Optional[Any] = None
 
-
+        print(f"Setting up {self.__class__.__name__}. Query dim is {query_dim}, context_dim is {context_dim} and using "
+              f"{heads} heads.")
 
     def forward(self, x, context=None, mask=None):
         q = self.to_q(x)
@@ -318,6 +337,9 @@ class MemoryEfficientCrossAttention(nn.Module):
             weights = torch.split(weights, context_num)
             out = torch.split(out, context_num)
             out = torch.stack([torch.einsum("c l h, c -> l h", o, w) for w, o in zip(weights, out)])
+        if "custom_attention_thresholder" in dir(builtins) and weights is not None:
+            out = builtins.custom_attention_thresholder(out)
+        builtins.out = out
         # TODO: Use this directly in the attention operation, as a bias
         if exists(mask):
             raise NotImplementedError

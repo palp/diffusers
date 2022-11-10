@@ -12,6 +12,7 @@ from ...schedulers import DDIMScheduler, LMSDiscreteScheduler, PNDMScheduler
 from ...utils import deprecate, logging
 from . import StableDiffusionPipelineOutput
 from .safety_checker import StableDiffusionSafetyChecker
+from ...pipeline_utils import logger
 
 
 class StableDiffusionPipeline(DiffusionPipeline):
