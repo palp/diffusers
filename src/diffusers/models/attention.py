@@ -549,7 +549,18 @@ class CrossAttention(nn.Module):
         batch_size, sequence_length, _ = hidden_states.shape
 
         query = self.to_q(hidden_states)
-        context = context if context is not None else hidden_states
+        context_in = context if context is not None else hidden_states
+
+        # Pack multi attention into one batch
+        if isinstance(context, dict):
+            context = context_in["hidden_states"]
+            weights = context_in["weights"]
+            context_num = context_in["context_num"]
+            # find another way
+            query = torch.cat([query[i].repeat(context_num[i],1,1) for i in range(len(context_num))], dim=0)
+        else:
+            context = context_in
+            weights = None
         key = self.to_k(context)
         value = self.to_v(context)
 
@@ -562,20 +573,33 @@ class CrossAttention(nn.Module):
         # TODO(PVP) - mask is currently never used. Remember to re-implement when used
 
         # attention, what we cannot get enough of
+        hidden_states = self.attention_exec(query, key, value, sequence_length, dim)
+
+        # handle multi attention weight and pack into right batchs
+        if weights is not None:
+            weights = torch.split(weights, context_num)
+            hidden_states = torch.split(hidden_states, context_num)
+            hidden_states = torch.stack([torch.einsum("c l h, c -> l h", o, w) for w, o in zip(weights, hidden_states)])
+        
+        # linear proj
+        hidden_states = self.to_out[0](hidden_states)
+        # dropout
+        hidden_states = self.to_out[1](hidden_states)
+        return hidden_states
+
+    def attention_exec(self, query, key, value, sequence_length, dim):
         if self._use_memory_efficient_attention_xformers:
+            if self.dim_head%8 != 0:
+                query, key, value = map(lambda t:F.pad(t, (0, 8-t.shape[2]%8)), (query, key, value))            
             hidden_states = self._memory_efficient_attention_xformers(query, key, value)
             # Some versions of xformers return output in fp32, cast it back to the dtype of the input
             hidden_states = hidden_states.to(query.dtype)
+
         else:
             if self._slice_size is None or query.shape[0] // self._slice_size == 1:
                 hidden_states = self._attention(query, key, value)
             else:
                 hidden_states = self._sliced_attention(query, key, value, sequence_length, dim)
-
-        # linear proj
-        hidden_states = self.to_out[0](hidden_states)
-        # dropout
-        hidden_states = self.to_out[1](hidden_states)
         return hidden_states
 
     def _attention(self, query, key, value):
@@ -625,6 +649,7 @@ class CrossAttention(nn.Module):
         key = key.contiguous()
         value = value.contiguous()
         hidden_states = xformers.ops.memory_efficient_attention(query, key, value, attn_bias=None)
+        hidden_states = hidden_states[:, :, :self.head_dim]
         hidden_states = self.reshape_batch_dim_to_heads(hidden_states)
         return hidden_states
 
