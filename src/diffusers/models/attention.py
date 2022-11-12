@@ -517,6 +517,7 @@ class CrossAttention(nn.Module):
 
         self.scale = dim_head**-0.5
         self.heads = heads
+        self.dim_head = dim_head
         # for slice_size > 0 the attention score computation
         # is split across the batch axis to save memory
         # You can set slice_size with `set_attention_slice`
