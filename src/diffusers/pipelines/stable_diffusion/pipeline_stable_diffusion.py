@@ -251,7 +251,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
                 f" {self.tokenizer.model_max_length} tokens: {removed_text}"
             )
             text_input_ids = text_input_ids[:, : self.tokenizer.model_max_length]
-        text_embeddings = self.text_encoder(text_input_ids.to(device), output_hidden_states=True)["hidden_state"][-2 if _USE_NEW_V1 else -1]
+        text_embeddings = self.text_encoder(text_input_ids.to(device), output_hidden_states=True)["hidden_states"][-2 if _USE_NEW_V1 else -1]
         text_embeddings = self.text_encoder.text_model.final_layer_norm(text_embeddings)
         # duplicate text embeddings for each generation per prompt, using mps friendly method
         bs_embed, seq_len, _ = text_embeddings.shape
