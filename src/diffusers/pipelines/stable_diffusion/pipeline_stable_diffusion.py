@@ -39,6 +39,10 @@ from .safety_checker import StableDiffusionSafetyChecker
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
+import os
+_USE_NEW_V1 = int(os.environ.get("USE_NEW_V1", 0)) == 1
+print("USE_NEW_V1=",_USE_NEW_V1, " @ diffuser:pipeline")
+
 
 class StableDiffusionPipeline(DiffusionPipeline):
     r"""
@@ -513,7 +517,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
         # 3. Encode input prompt
         text_embeddings = self._encode_prompt(
             prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt
-        )
+            )
 
         # 4. Prepare timesteps
         self.scheduler.set_timesteps(num_inference_steps, device=device)
