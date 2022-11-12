@@ -35,6 +35,9 @@ from .unet_2d_blocks import (
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
+import os
+_USE_NEW_V1 = int(os.environ.get("USE_NEW_V1", 0)) == 1
+print("USE_NEW_V1=",_USE_NEW_V1, "@diffusers:unet_2d_condition")
 
 @dataclass
 class UNet2DConditionOutput(BaseOutput):
@@ -143,7 +146,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
                 resnet_act_fn=act_fn,
                 resnet_groups=norm_num_groups,
                 cross_attention_dim=cross_attention_dim,
-                attn_num_head_channels=attention_head_dim,
+                attn_num_head_channels=output_channel//64 if _USE_NEW_V1 else attention_head_dim,
                 downsample_padding=downsample_padding,
             )
             self.down_blocks.append(down_block)
@@ -157,7 +160,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
             output_scale_factor=mid_block_scale_factor,
             resnet_time_scale_shift="default",
             cross_attention_dim=cross_attention_dim,
-            attn_num_head_channels=attention_head_dim,
+            attn_num_head_channels=output_channel//64 if _USE_NEW_V1 else attention_head_dim,
             resnet_groups=norm_num_groups,
         )
 
@@ -193,7 +196,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin):
                 resnet_act_fn=act_fn,
                 resnet_groups=norm_num_groups,
                 cross_attention_dim=cross_attention_dim,
-                attn_num_head_channels=attention_head_dim,
+                attn_num_head_channels=output_channel//64 if _USE_NEW_V1 else attention_head_dim,
             )
             self.up_blocks.append(up_block)
             prev_output_channel = output_channel
