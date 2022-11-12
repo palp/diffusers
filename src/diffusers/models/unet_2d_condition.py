@@ -35,6 +35,9 @@ from .unet_2d_blocks import (
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
+import os
+_USE_NEW_V1 = int(os.environ.get("USE_NEW_V1", 0)) == 1
+print("USE_NEW_V1=",_USE_NEW_V1, "@diffusers:unet_2d_condition")
 
 @dataclass
 class UNet2DConditionOutput(BaseOutput):
