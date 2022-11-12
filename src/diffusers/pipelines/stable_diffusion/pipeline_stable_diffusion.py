@@ -38,6 +38,10 @@ from .safety_checker import StableDiffusionSafetyChecker
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
+import os
+_USE_NEW_V1 = int(os.environ.get("USE_NEW_V1", 0)) == 1
+print("USE_NEW_V1=",_USE_NEW_V1, " @ diffuser:pipeline")
+
 
 class StableDiffusionPipeline(DiffusionPipeline):
     r"""
@@ -247,8 +251,8 @@ class StableDiffusionPipeline(DiffusionPipeline):
                 f" {self.tokenizer.model_max_length} tokens: {removed_text}"
             )
             text_input_ids = text_input_ids[:, : self.tokenizer.model_max_length]
-        text_embeddings = self.text_encoder(text_input_ids.to(device))[0]
-
+        text_embeddings = self.text_encoder(text_input_ids.to(device), output_hidden_states=True)["hidden_state"][-2 if _USE_NEW_V1 else -1]
+        text_embeddings = self.text_encoder.text_model.final_layer_norm(text_embeddings)
         # duplicate text embeddings for each generation per prompt, using mps friendly method
         bs_embed, seq_len, _ = text_embeddings.shape
         text_embeddings = text_embeddings.repeat(1, num_images_per_prompt, 1)
@@ -397,7 +401,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
 
         text_embeddings = self._encode_prompt(
             prompt, device, num_images_per_prompt, do_classifier_free_guidance, negative_prompt
-        )
+            )
 
         # Unlike in other pipelines, latents need to be generated in the target device
         # for 1-to-1 results reproducibility with the CompVis implementation.
