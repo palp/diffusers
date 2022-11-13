@@ -598,7 +598,7 @@ class CrossAttention(nn.Module):
 
     def _memory_efficient_attention_xformers(self, query, key, value):
         hidden_states = xformers.ops.memory_efficient_attention(query, key, value, attn_bias=None)
-        hidden_states = hidden_states[:, :, :self.head_dim]
+        hidden_states = hidden_states[:, :, :self.dim_head]
         hidden_states = self.reshape_batch_dim_to_heads(hidden_states)
         return hidden_states
 
