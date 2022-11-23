@@ -39,8 +39,8 @@ from .safety_checker import StableDiffusionSafetyChecker
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 import os
-_USE_NEW_V1 = int(os.environ.get("USE_NEW_V1", 0)) == 1
-print("USE_NEW_V1=",_USE_NEW_V1, " @ diffuser:pipeline")
+_USE_V2 = int(os.environ.get("USE_V2", 0)) == 1
+print("USE_V2=",_USE_V2, "@diffuserw:pipeline")
 
 
 class StableDiffusionPipeline(DiffusionPipeline):
@@ -251,7 +251,7 @@ class StableDiffusionPipeline(DiffusionPipeline):
                 f" {self.tokenizer.model_max_length} tokens: {removed_text}"
             )
             text_input_ids = text_input_ids[:, : self.tokenizer.model_max_length]
-        text_embeddings = self.text_encoder(text_input_ids.to(device), output_hidden_states=True)["hidden_states"][-2 if _USE_NEW_V1 else -1]
+        text_embeddings = self.text_encoder(text_input_ids.to(device), output_hidden_states=True)["hidden_states"][-2 if _USE_V2 else -1]
         text_embeddings = self.text_encoder.text_model.final_layer_norm(text_embeddings)
         # duplicate text embeddings for each generation per prompt, using mps friendly method
         bs_embed, seq_len, _ = text_embeddings.shape
