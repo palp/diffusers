@@ -40,8 +40,8 @@ from .safety_checker import StableDiffusionSafetyChecker
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 import os
-_USE_NEW_V1 = int(os.environ.get("USE_NEW_V1", 0)) == 1
-print("USE_NEW_V1=",_USE_NEW_V1, " @ diffuser:pipeline")
+_USE_V2 = int(os.environ.get("USE_V2", 0)) == 1
+print("USE_V2=",_USE_V2, "@diffuserw:pipeline")
 
 
 class StableDiffusionPipeline(DiffusionPipeline):

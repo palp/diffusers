@@ -27,8 +27,8 @@ from ..utils import BaseOutput
 from ..utils.import_utils import is_xformers_available
 
 import os
-_USE_NEW_V1 = int(os.environ.get("USE_NEW_V1", 0)) == 1
-print("USE_NEW_V1=",_USE_NEW_V1," @diffusers:attention")
+_USE_V2 = int(os.environ.get("USE_V2", 0)) == 1
+print("USE_V2=",_USE_V2,"@diffusers:attention")
 
 @dataclass
 class Transformer2DModelOutput(BaseOutput):
