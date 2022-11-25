@@ -200,6 +200,12 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
             if `return_dict` is True, otherwise a `tuple`. When returning a tuple, the first element is the sample
             tensor.
         """
+        ######TODO: ### REMOVE AFTER MODEL UPDATE #######
+        # backward compatibility
+        if _USE_V2: 
+            self.use_linear_projection = True
+        #################################################
+
         # 1. Input
         if self.is_input_continuous:
             batch, channel, height, weight = hidden_states.shape
@@ -465,6 +471,13 @@ class BasicTransformerBlock(nn.Module):
             self.attn2._use_memory_efficient_attention_xformers = use_memory_efficient_attention_xformers
 
     def forward(self, hidden_states, context=None, timestep=None):
+
+        ######TODO: ### REMOVE AFTER MODEL UPDATE #######
+        # backward compatibility
+        if _USE_V2: 
+            self.only_cross_attention = False
+        #################################################
+
         # 1. Self-Attention
         norm_hidden_states = (
             self.norm1(hidden_states, timestep) if self.use_ada_layer_norm else self.norm1(hidden_states)
