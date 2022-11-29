@@ -20,7 +20,6 @@ import random
 import shutil
 import tempfile
 import unittest
-from functools import partial
 
 import numpy as np
 import torch
@@ -93,6 +92,24 @@ class DownloadTests(unittest.TestCase):
             # None of the downloaded files should be a flax file even if we have some here:
             # https://huggingface.co/hf-internal-testing/tiny-stable-diffusion-pipe/blob/main/unet/diffusion_flax_model.msgpack
             assert not any(f.endswith(".msgpack") for f in files)
+            # We need to never convert this tiny model to safetensors for this test to pass
+            assert not any(f.endswith(".safetensors") for f in files)
+
+    def test_download_safetensors(self):
+        with tempfile.TemporaryDirectory() as tmpdirname:
+            # pipeline has Flax weights
+            _ = DiffusionPipeline.from_pretrained(
+                "hf-internal-testing/tiny-stable-diffusion-pipe-safetensors",
+                safety_checker=None,
+                cache_dir=tmpdirname,
+            )
+
+            all_root_files = [t[-1] for t in os.walk(os.path.join(tmpdirname, os.listdir(tmpdirname)[0], "snapshots"))]
+            files = [item for sublist in all_root_files for item in sublist]
+
+            # None of the downloaded files should be a pytorch file even if we have some here:
+            # https://huggingface.co/hf-internal-testing/tiny-stable-diffusion-pipe/blob/main/unet/diffusion_flax_model.msgpack
+            assert not any(f.endswith(".bin") for f in files)
 
     def test_download_no_safety_checker(self):
         prompt = "hello"
@@ -332,14 +349,13 @@ class PipelineFastTests(unittest.TestCase):
     @parameterized.expand(
         [
             [DDIMScheduler, DDIMPipeline, 32],
-            [partial(DDPMScheduler, predict_epsilon=True), DDPMPipeline, 32],
+            [DDPMScheduler, DDPMPipeline, 32],
             [DDIMScheduler, DDIMPipeline, (32, 64)],
-            [partial(DDPMScheduler, predict_epsilon=True), DDPMPipeline, (64, 32)],
+            [DDPMScheduler, DDPMPipeline, (64, 32)],
         ]
     )
     def test_uncond_unet_components(self, scheduler_fn=DDPMScheduler, pipeline_fn=DDPMPipeline, sample_size=32):
         unet = self.dummy_uncond_unet(sample_size)
-        # DDIM doesn't take `predict_epsilon`, and DDPM requires it -- so using partial in parameterized decorator
         scheduler = scheduler_fn()
         pipeline = pipeline_fn(unet, scheduler).to(torch_device)
 
@@ -638,7 +654,10 @@ class PipelineSlowTests(unittest.TestCase):
                     force_download=True,
                 )
 
-        assert cap_logger.out == "Keyword arguments {'not_used': True} not recognized.\n"
+        assert (
+            cap_logger.out
+            == "Keyword arguments {'not_used': True} are not expected by DDPMPipeline and will be ignored.\n"
+        )
 
     def test_from_pretrained_save_pretrained(self):
         # 1. Load models
