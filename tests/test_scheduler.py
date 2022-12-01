@@ -334,7 +334,7 @@ class SchedulerCommonTest(unittest.TestCase):
 
             assert torch.sum(torch.abs(output - new_output)) < 1e-5, "Scheduler outputs are not identical"
 
-    def test_from_pretrained_save_pretrained(self):
+    def test_from_save_pretrained(self):
         kwargs = dict(self.forward_default_kwargs)
 
         num_inference_steps = kwargs.pop("num_inference_steps", None)
@@ -548,7 +548,6 @@ class SchedulerCommonTest(unittest.TestCase):
     def test_add_noise_device(self):
         for scheduler_class in self.scheduler_classes:
             if scheduler_class == IPNDMScheduler:
-                # Skip until #990 is addressed
                 continue
             scheduler_config = self.get_scheduler_config()
             scheduler = scheduler_class(**scheduler_config)
@@ -583,6 +582,20 @@ class SchedulerCommonTest(unittest.TestCase):
                     f" argument to {self.model_class}.__init__ if there are deprecated arguments or remove the"
                     " deprecated argument from `_deprecated_kwargs = [<deprecated_argument>]`"
                 )
+
+    def test_trained_betas(self):
+        for scheduler_class in self.scheduler_classes:
+            if scheduler_class == VQDiffusionScheduler:
+                continue
+
+            scheduler_config = self.get_scheduler_config()
+            scheduler = scheduler_class(**scheduler_config, trained_betas=np.array([0.0, 0.1]))
+
+            with tempfile.TemporaryDirectory() as tmpdirname:
+                scheduler.save_pretrained(tmpdirname)
+                new_scheduler = scheduler_class.from_pretrained(tmpdirname)
+
+            assert scheduler.betas.tolist() == new_scheduler.betas.tolist()
 
 
 class DDPMSchedulerTest(SchedulerCommonTest):
@@ -626,12 +639,12 @@ class DDPMSchedulerTest(SchedulerCommonTest):
             self.check_over_configs(prediction_type=prediction_type)
 
     def test_deprecated_predict_epsilon(self):
-        deprecate("remove this test", "0.10.0", "remove")
+        deprecate("remove this test", "0.11.0", "remove")
         for predict_epsilon in [True, False]:
             self.check_over_configs(predict_epsilon=predict_epsilon)
 
     def test_deprecated_epsilon(self):
-        deprecate("remove this test", "0.10.0", "remove")
+        deprecate("remove this test", "0.11.0", "remove")
         scheduler_class = self.scheduler_classes[0]
         scheduler_config = self.get_scheduler_config()
 
@@ -861,7 +874,7 @@ class DPMSolverMultistepSchedulerTest(SchedulerCommonTest):
 
                 assert torch.sum(torch.abs(output - new_output)) < 1e-5, "Scheduler outputs are not identical"
 
-    def test_from_pretrained_save_pretrained(self):
+    def test_from_save_pretrained(self):
         pass
 
     def check_over_forward(self, time_step=0, **forward_kwargs):
@@ -991,6 +1004,22 @@ class DPMSolverMultistepSchedulerTest(SchedulerCommonTest):
 
         assert abs(result_mean.item() - 0.3301) < 1e-3
 
+    def test_fp16_support(self):
+        scheduler_class = self.scheduler_classes[0]
+        scheduler_config = self.get_scheduler_config(thresholding=True, dynamic_thresholding_ratio=0)
+        scheduler = scheduler_class(**scheduler_config)
+
+        num_inference_steps = 10
+        model = self.dummy_model()
+        sample = self.dummy_sample_deter.half()
+        scheduler.set_timesteps(num_inference_steps)
+
+        for i, t in enumerate(scheduler.timesteps):
+            residual = model(sample, t)
+            sample = scheduler.step(residual, t, sample).prev_sample
+
+        assert sample.dtype == torch.float16
+
 
 class PNDMSchedulerTest(SchedulerCommonTest):
     scheduler_classes = (PNDMScheduler,)
@@ -1038,7 +1067,7 @@ class PNDMSchedulerTest(SchedulerCommonTest):
 
             assert torch.sum(torch.abs(output - new_output)) < 1e-5, "Scheduler outputs are not identical"
 
-    def test_from_pretrained_save_pretrained(self):
+    def test_from_save_pretrained(self):
         pass
 
     def check_over_forward(self, time_step=0, **forward_kwargs):
@@ -1407,7 +1436,6 @@ class LMSDiscreteSchedulerTest(SchedulerCommonTest):
             "beta_start": 0.0001,
             "beta_end": 0.02,
             "beta_schedule": "linear",
-            "trained_betas": None,
         }
 
         config.update(**kwargs)
@@ -1489,7 +1517,6 @@ class EulerDiscreteSchedulerTest(SchedulerCommonTest):
             "beta_start": 0.0001,
             "beta_end": 0.02,
             "beta_schedule": "linear",
-            "trained_betas": None,
         }
 
         config.update(**kwargs)
@@ -1580,7 +1607,6 @@ class EulerAncestralDiscreteSchedulerTest(SchedulerCommonTest):
             "beta_start": 0.0001,
             "beta_end": 0.02,
             "beta_schedule": "linear",
-            "trained_betas": None,
         }
 
         config.update(**kwargs)
@@ -1718,7 +1744,7 @@ class IPNDMSchedulerTest(SchedulerCommonTest):
 
             assert torch.sum(torch.abs(output - new_output)) < 1e-5, "Scheduler outputs are not identical"
 
-    def test_from_pretrained_save_pretrained(self):
+    def test_from_save_pretrained(self):
         pass
 
     def check_over_forward(self, time_step=0, **forward_kwargs):
@@ -1889,7 +1915,6 @@ class HeunDiscreteSchedulerTest(SchedulerCommonTest):
             "beta_start": 0.0001,
             "beta_end": 0.02,
             "beta_schedule": "linear",
-            "trained_betas": None,
         }
 
         config.update(**kwargs)
