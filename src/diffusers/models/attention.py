@@ -33,6 +33,9 @@ print("USE_V2=",_USE_V2,"@diffusers:attention")
 _FORCE_VAE_FLASH_ATTN = int(os.environ.get("FORCE_VAE_FLASH_ATTN", 0)) == 1
 print("FORCE_VAE_FLASH_ATTN=",_FORCE_VAE_FLASH_ATTN,"@diffusers:attention")
 
+_FORCE_VAE_ATTN_SLICE_SIZE = int(os.environ.get("FORCE_VAE_ATTN_SLICE_SIZE", 0))
+print("FORCE_VAE_ATTN_SLICE_SIZE=",_FORCE_VAE_ATTN_SLICE_SIZE,"@diffusers:attention")
+
 @dataclass
 class Transformer2DModelOutput(BaseOutput):
     """
@@ -304,6 +307,7 @@ class AttentionBlock(nn.Module):
         # HIJACK #TODO: Remove hijack
         self._use_memory_efficient_attention_xformers = _FORCE_VAE_FLASH_ATTN
         self.dim_head = self.channels // self.num_heads
+        self._slice_size = None if _FORCE_VAE_ATTN_SLICE_SIZE==0 else _FORCE_VAE_ATTN_SLICE_SIZE
     def reshape_heads_to_batch_dim(self, tensor):
         batch_size, seq_len, dim = tensor.shape
         head_size = self.num_heads
@@ -332,8 +336,8 @@ class AttentionBlock(nn.Module):
         key_proj = self.key(hidden_states)
         value_proj = self.value(hidden_states)
 
-        scale = 1 / math.sqrt(self.channels / self.num_heads)
-        dim = query_proj[-1]
+        self.scale = 1 / math.sqrt(self.channels / self.num_heads)
+        dim = query_proj.shape[-1]
         query_proj = self.reshape_heads_to_batch_dim(query_proj)
         key_proj = self.reshape_heads_to_batch_dim(key_proj)
         value_proj = self.reshape_heads_to_batch_dim(value_proj)
@@ -349,18 +353,34 @@ class AttentionBlock(nn.Module):
         return hidden_states
 
     def attention_exec(self, query, key, value, sequence_length, dim):
-        if self._use_memory_efficient_attention_xformers:
-            if self.dim_head%8 != 0:
-                query, key, value = map(lambda t:F.pad(t, (0, 8-t.shape[2]%8)), (query, key, value))            
-            hidden_states = self._memory_efficient_attention_xformers(query, key, value)
-            # Some versions of xformers return output in fp32, cast it back to the dtype of the input
-            hidden_states = hidden_states.to(query.dtype)
-
-        else:
-            if self._slice_size is None or query.shape[0] // self._slice_size == 1:
-                hidden_states = self._attention(query, key, value)
+        if self._slice_size is None or query.shape[0] // self._slice_size == 1:
+            if self._use_memory_efficient_attention_xformers:
+                hidden_states = self._memory_efficient_attention_xformers(query, key, value)
             else:
-                hidden_states = self._sliced_attention(query, key, value, sequence_length, dim)
+                hidden_states = self._attention(query, key, value)
+        else:
+            hidden_states = self._sliced_attention(query, key, value, sequence_length, dim)
+        # reshape hidden_states
+        hidden_states = self.reshape_batch_dim_to_heads(hidden_states)
+        return hidden_states
+
+    def _sliced_attention(self, query, key, value, sequence_length, dim):
+        batch_size_attention = query.shape[0]
+        hidden_states = torch.zeros(
+            (batch_size_attention, sequence_length, dim // self.num_heads), device=query.device, dtype=query.dtype
+        )
+        slice_size = self._slice_size if self._slice_size is not None else hidden_states.shape[0]
+        print(f"Attn: Slice {hidden_states.shape[0]} to {self._slice_size}")
+        for i in range(hidden_states.shape[0] // slice_size):
+            start_idx = i * slice_size
+            end_idx = (i + 1) * slice_size
+            q,k,v = query[start_idx:end_idx],key[start_idx:end_idx],value[start_idx:end_idx]
+            if self._use_memory_efficient_attention_xformers:
+                attn_slice = self._memory_efficient_attention_xformers(q,k,v)
+            else:
+                attn_slice = self._attention(q,k,v)
+            hidden_states[start_idx:end_idx] = attn_slice
+
         return hidden_states
 
     def _attention(self, query, key, value):
@@ -376,42 +396,17 @@ class AttentionBlock(nn.Module):
 
         hidden_states = torch.bmm(attention_probs, value)
 
-        # reshape hidden_states
-        hidden_states = self.reshape_batch_dim_to_heads(hidden_states)
-        return hidden_states
-
-    def _sliced_attention(self, query, key, value, sequence_length, dim):
-        batch_size_attention = query.shape[0]
-        hidden_states = torch.zeros(
-            (batch_size_attention, sequence_length, dim // self.heads), device=query.device, dtype=query.dtype
-        )
-        slice_size = self._slice_size if self._slice_size is not None else hidden_states.shape[0]
-        for i in range(hidden_states.shape[0] // slice_size):
-            start_idx = i * slice_size
-            end_idx = (i + 1) * slice_size
-            attn_slice = torch.baddbmm(
-                torch.empty(slice_size, query.shape[1], key.shape[1], dtype=query.dtype, device=query.device),
-                query[start_idx:end_idx],
-                key[start_idx:end_idx].transpose(-1, -2),
-                beta=0,
-                alpha=self.scale,
-            )
-            attn_slice = attn_slice.softmax(dim=-1)
-            attn_slice = torch.bmm(attn_slice, value[start_idx:end_idx])
-
-            hidden_states[start_idx:end_idx] = attn_slice
-
-        # reshape hidden_states
-        hidden_states = self.reshape_batch_dim_to_heads(hidden_states)
         return hidden_states
 
     def _memory_efficient_attention_xformers(self, query, key, value):
+        if self.dim_head%8 != 0:
+            query, key, value = map(lambda t:F.pad(t, (0, 8-t.shape[2]%8)), (query, key, value))  
         query = query.contiguous()
         key = key.contiguous()
         value = value.contiguous()
         hidden_states = xformers.ops.memory_efficient_attention(query, key, value, attn_bias=None)
         hidden_states = hidden_states[:, :, :self.dim_head]
-        hidden_states = self.reshape_batch_dim_to_heads(hidden_states)
+        hidden_states = hidden_states.to(query.dtype)
         return hidden_states
 
 
