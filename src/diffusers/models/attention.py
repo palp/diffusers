@@ -30,6 +30,9 @@ import os
 _USE_V2 = int(os.environ.get("USE_V2", 0)) == 1
 print("USE_V2=",_USE_V2,"@diffusers:attention")
 
+_FORCE_VAE_FLASH_ATTN = int(os.environ.get("FORCE_VAE_FLASH_ATTN", 0)) == 1
+print("FORCE_VAE_FLASH_ATTN=",_FORCE_VAE_FLASH_ATTN,"@diffusers:attention")
+
 @dataclass
 class Transformer2DModelOutput(BaseOutput):
     """
@@ -299,7 +302,7 @@ class AttentionBlock(nn.Module):
         self.proj_attn = nn.Linear(channels, channels, 1)
 
         # HIJACK #TODO: Remove hijack
-        self._use_memory_efficient_attention_xformers = 1
+        self._use_memory_efficient_attention_xformers = _FORCE_VAE_FLASH_ATTN
         self.dim_head = self.channels // self.num_heads
     def reshape_heads_to_batch_dim(self, tensor):
         batch_size, seq_len, dim = tensor.shape
