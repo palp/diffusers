@@ -121,3 +121,20 @@ if is_flax_available() and is_transformers_available():
     from .pipelines import FlaxStableDiffusionPipeline
 else:
     from .utils.dummy_flax_and_transformers_objects import *  # noqa F403
+
+from .models.unet_2d_condition_oneflow import OneFlowUNet2DConditionModel
+from .models.vae_oneflow import OneFlowAutoencoderKL
+
+from .schedulers import (
+    OneFlowDDIMScheduler,
+    OneFlowDDPMScheduler,
+    OneFlowPNDMScheduler,
+    OneFlowDPMSolverMultistepScheduler,
+    OneFlowEulerDiscreteScheduler,
+    OneFlowSchedulerMixin
+)
+
+from .pipelines import OneFlowStableDiffusionPipeline
+from .pipelines import OneFlowStableDiffusionImg2ImgPipeline
+from .pipeline_oneflow_utils import OneFlowDiffusionPipeline
+from .modeling_oneflow_utils import OneFlowModelMixin
