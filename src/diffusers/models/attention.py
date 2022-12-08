@@ -45,6 +45,12 @@ class Transformer2DModelOutput(BaseOutput):
 if is_xformers_available():
     import xformers
     import xformers.ops
+    if hasattr(xformers.ops, "MemoryEfficientAttentionCutlassOp"):
+        mem_attn_op = xformers.ops.MemoryEfficientAttentionCutlassOp
+    elif hasattr(xformers.ops, "MemoryEfficientAttentionGenericForwardOp"):
+        mem_attn_op = xformers.ops.MemoryEfficientAttentionGenericForwardOp
+    else:
+        mem_attn_op = None
 else:
     xformers = None
 
@@ -666,7 +672,7 @@ class CrossAttention(nn.Module):
         query = query.contiguous()
         key = key.contiguous()
         value = value.contiguous()
-        hidden_states = xformers.ops.memory_efficient_attention(query, key, value, attn_bias=None, op=xformers.ops.MemoryEfficientAttentionCutlassOp)
+        hidden_states = xformers.ops.memory_efficient_attention(query, key, value, attn_bias=None, op=mem_attn_op)
         hidden_states = hidden_states[:, :, :self.dim_head]
         hidden_states = self.reshape_batch_dim_to_heads(hidden_states)
         return hidden_states
