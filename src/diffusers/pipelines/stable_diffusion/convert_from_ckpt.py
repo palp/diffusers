@@ -264,6 +264,16 @@ def create_unet_diffusers_config(original_config, image_size: int, controlnet=Fa
         if head_dim is None:
             head_dim = [5, 10, 20, 20]
 
+    context_dim = unet_params.context_dim
+
+    if not isinstance(context_dim, int):
+        for other_context_dim in context_dim:
+            if context_dim[0] != other_context_dim:
+                raise NotImplementedError(
+                    "Unet has varying context dimensions. The context dimension is used for setting the dimension of the cross attention layers in the unet. If you have a checkpoint that has varying cross attention dimensions, please open an issue at https://github.com/huggingface/diffusers/issues"
+                )
+
+        context_dim = context_dim[0]
     class_embed_type = None
     projection_class_embeddings_input_dim = None
 
@@ -281,13 +291,15 @@ def create_unet_diffusers_config(original_config, image_size: int, controlnet=Fa
         down_block_types=tuple(down_block_types),
         block_out_channels=tuple(block_out_channels),
         layers_per_block=unet_params.num_res_blocks,
-        cross_attention_dim=unet_params.context_dim,
+        cross_attention_dim=context_dim,
         attention_head_dim=head_dim,
         use_linear_projection=use_linear_projection,
         class_embed_type=class_embed_type,
         projection_class_embeddings_input_dim=projection_class_embeddings_input_dim,
     )
 
+    if "transformer_depth" in unet_params:
+        config["transformer_num_layers"] = unet_params.transformer_depth
     if not controlnet:
         config["out_channels"] = unet_params.out_channels
         config["up_block_types"] = tuple(up_block_types)
